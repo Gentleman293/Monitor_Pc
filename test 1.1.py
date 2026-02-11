@@ -1,14 +1,15 @@
 import tkinter 
 import GPUtil
-import matplotlib.pyplot 
-
-
+import psutil
+import pyqtgraph
+import setuptools
+import queue
+import threading
+import time
 
 root = tkinter.Tk()
 root.title("Monitor GPU Usage")
 root.geometry("1920x1080")
-
-
 
 
 
