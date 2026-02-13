@@ -2,6 +2,7 @@ import tkinter
 import GPUtil
 import psutil
 import pyqtgraph
+import PyQt5
 import setuptools
 import queue
 import threading
