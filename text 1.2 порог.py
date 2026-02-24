@@ -18,6 +18,7 @@ class MetricsRepository:
         """
 
     def __init__(self, db_path: str = "monitor.db") -> None:
+        """Инициализирует подключение к SQLite и подготавливает схему БД."""
         self.db_path = db_path
         self.connection = sqlite3.connect(self.db_path)
         self.connection.execute("PRAGMA journal_mode=WAL;")
@@ -25,6 +26,7 @@ class MetricsRepository:
         self.create_schema()
 
     def create_schema(self) -> None:
+        """Создаёт таблицу measurements, если она ещё не существует."""
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS measurements (
@@ -48,6 +50,7 @@ class MetricsRepository:
         gpu_load_percent: float | None,
         gpu_temp_c: float | None,
     ) -> None:
+        """Сохраняет один снимок метрик в таблицу measurements."""
         self.connection.execute(
             """
             INSERT INTO measurements (
@@ -60,6 +63,7 @@ class MetricsRepository:
         self.connection.commit()
 
     def close(self) -> None:
+        """Закрывает соединение с базой данных."""
         self.connection.close()
 
 
@@ -79,6 +83,7 @@ class MetricChart:
         y_max: float = 100.0,
         unit: str = "%",
     ) -> None:
+        """Создаёт виджет графика метрики и подготавливает историю значений."""
         self.width = width
         self.height = height
         self.padding = padding
@@ -130,6 +135,7 @@ class MetricChart:
         self.draw_series()
 
     def draw_static_grid(self) -> None:
+        """Рисует сетку, подписи и оси графика (статичный слой)."""
         self.canvas.delete("grid")
         self.canvas.delete("axes")
         self.canvas.delete("labels")
@@ -187,11 +193,13 @@ class MetricChart:
         )
 
     def value_to_y(self, value: float, top: float, bottom: float) -> float:
+        """Преобразует значение метрики в координату Y в пределах рабочей области."""
         value = max(self.y_min, min(self.y_max, value))
         normalized = (value - self.y_min) / (self.y_max - self.y_min)
         return bottom - normalized * (bottom - top)
 
     def draw_series(self) -> None:
+        """Перерисовывает линию истории и маркер последней точки."""
         self.canvas.delete("series")
 
         plot_left = self.padding
@@ -222,7 +230,7 @@ class MetricChart:
         self.canvas.create_oval(
             last_x - 3,
             last_y - 3,
-            last_x + 3,
+last_x + 3,
             last_y + 3,
             fill=self.point_color,
             outline="",
@@ -230,6 +238,7 @@ class MetricChart:
         )
 
     def update_value(self, value: float, display_text: str | None = None) -> None:
+        """Добавляет новое значение в историю и обновляет отображение графика."""
         self.history.append(value)
 
         if display_text is None:
@@ -243,12 +252,18 @@ class PcMonitorApp:
     """Мониторинг CPU/RAM/GPU + запись в файл SQLite monitor.db."""
 
     def __init__(self, root: tk.Tk) -> None:
+        """Собирает интерфейс приложения и запускает цикл обновления метрик."""
         self.root = root
         self.root.title("PC Monitor (CPU/RAM/GPU + SQLite)")
-        self.root.geometry("900x760")
         self.root.configure(bg="#111")
 
+        self.layout = self.calculate_layout()
+        self.root.geometry(f"{self.layout['window_width']}x{self.layout['window_height']}")
+        self.root.minsize(860, 620)
+
         self.repo = MetricsRepository(db_path="monitor.db")
+        self.cpu_core_labels: list[tk.Label] = []
+        self.cpu_details_visible = False
 
         self.header = tk.Label(
             root,
@@ -268,28 +283,56 @@ class PcMonitorApp:
         self.right_column = tk.Frame(self.main_frame, bg="#111")
         self.right_column.pack(side="left", fill="y", padx=(14, 0), anchor="n")
 
+        self.right_panels_row = tk.Frame(self.right_column, bg="#111")
+        self.right_panels_row.pack(fill="x", anchor="n")
+
         self.cpu_chart = MetricChart(
             parent=self.left_column,
             title="Загрузка процессора (CPU)",
             line_color="#2bd66f",
+            width=self.layout["chart_width"],
+            height=self.layout["chart_height"],
+            max_points=self.layout["chart_points"],
             unit="%",
         )
+        self.cpu_details_button = tk.Button(
+            self.left_column,
+            text="Подробнее",
+            command=self.toggle_cpu_details_panel,
+            bg="#2b2b2b",
+            fg="#f5f5f5",
+            activebackground="#3a3a3a",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=10,
+            pady=4,
+        )
+        self.cpu_details_button.pack(anchor="w", pady=(0, 10))
         self.ram_chart = MetricChart(
             parent=self.left_column,
             title="Загруженность оперативной памяти (RAM)",
             line_color="#4da3ff",
+            width=self.layout["chart_width"],
+            height=self.layout["chart_height"],
+            max_points=self.layout["chart_points"],
             unit="%",
         )
         self.gpu_load_chart = MetricChart(
             parent=self.left_column,
             title="Нагруженность видеокарты (GPU)",
             line_color="#ff4d8b",
+            width=self.layout["chart_width"],
+            height=self.layout["chart_height"],
+            max_points=self.layout["chart_points"],
             unit="%",
         )
         self.gpu_temp_chart = MetricChart(
             parent=self.left_column,
             title="Температура видеокарты (GPU)",
             line_color="#ff8f3d",
+            width=self.layout["chart_width"],
+            height=self.layout["chart_height"],
+            max_points=self.layout["chart_points"],
             y_min=0,
             y_max=120,
             unit="°C",
@@ -329,9 +372,32 @@ class PcMonitorApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.update_all_metrics()
 
+    def calculate_layout(self) -> dict[str, int]:
+        """Подбирает размеры окна и графиков под текущее разрешение экрана."""
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        window_width = max(900, min(int(screen_width * 0.78), 1500))
+        window_height = max(650, min(int(screen_height * 0.9), 980))
+
+        is_compact_display = screen_height <= 900 or screen_width <= 1600
+        chart_height = 120 if is_compact_display else 150
+        chart_points = 72 if is_compact_display else 90
+        chart_width = 460 if is_compact_display else 540
+
+        return {
+            "window_width": window_width,
+            "window_height": window_height,
+            "chart_width": chart_width,
+            "chart_height": chart_height,
+            "chart_points": chart_points,
+        }
+
     def build_threshold_controls(self) -> None:
-        controls_frame = tk.Frame(self.right_column, bg="#1a1a1a", padx=12, pady=12)
-        controls_frame.pack(fill="x", pady=(0, 10))
+        """Создаёт панель ввода пороговых значений и блок предупреждений."""
+        controls_frame = tk.Frame(self.right_panels_row, bg="#1a1a1a", padx=12, pady=12)
+        controls_frame.pack(side="left", fill="y")
+        self.threshold_controls_frame = controls_frame
 
         title_label = tk.Label(
             controls_frame,
@@ -415,6 +481,7 @@ class PcMonitorApp:
         self.warning_label.pack(fill="x", pady=(8, 0))
 
     def apply_thresholds(self) -> None:
+        """Проверяет и применяет пороги из полей ввода."""
         updated_values: dict[str, float] = {}
 
         for key, entry in self.threshold_entries.items():
@@ -448,6 +515,78 @@ class PcMonitorApp:
                 gpu_temp_c=self.last_metrics["gpu_temp"],
             )
 
+    def build_cpu_details_panel(self) -> None:
+        """Создаёт встроенную панель с нагрузкой по каждому логическому ядру CPU."""
+        self.cpu_details_frame = tk.Frame(self.right_panels_row, bg="#1a1a1a", padx=12, pady=12)
+
+        title_label = tk.Label(
+            self.cpu_details_frame,
+            text="Загрузка каждого ядра CPU",
+            font=("Segoe UI", 12, "bold"),
+            fg="#f5f5f5",
+            bg="#1a1a1a",
+            anchor="w",
+        )
+        title_label.pack(fill="x", pady=(0, 8))
+
+        self.cpu_core_labels = []
+        core_count = psutil.cpu_count(logical=True) or 0
+        for core_index in range(core_count):
+            core_label = tk.Label(
+                self.cpu_details_frame,
+                text=f"Ядро {core_index + 1}: 0.0%",
+                font=("Segoe UI", 10),
+                fg="#cfcfcf",
+                bg="#1a1a1a",
+                anchor="w",
+                width=22,
+            )
+            core_label.pack(fill="x", pady=2)
+            self.cpu_core_labels.append(core_label)
+
+    def toggle_cpu_details_panel(self) -> None:
+        """Переключает видимость панели детальной загрузки CPU."""
+        if self.cpu_details_visible:
+            self.hide_cpu_details_panel()
+        else:
+            self.show_cpu_details_panel()
+
+    def show_cpu_details_panel(self) -> None:
+        """Показывает панель CPU-деталей и сдвигает блок порогов вправо."""
+        if not hasattr(self, "cpu_details_frame"):
+            self.build_cpu_details_panel()
+
+        self.cpu_details_frame.pack(side="left", fill="y", padx=(0, 10))
+        self.threshold_controls_frame.pack_forget()
+        self.threshold_controls_frame.pack(side="left", fill="y")
+
+        self.cpu_details_visible = True
+        self.cpu_details_button.configure(text="Скрыть подробности")
+        self.update_cpu_details_panel()
+
+    def hide_cpu_details_panel(self) -> None:
+        """Скрывает панель CPU-деталей и возвращает блок порогов на место."""
+        if hasattr(self, "cpu_details_frame"):
+            self.cpu_details_frame.pack_forget()
+
+        self.threshold_controls_frame.pack_forget()
+        self.threshold_controls_frame.pack(side="left", fill="y")
+
+        self.cpu_details_visible = False
+        self.cpu_details_button.configure(text="Подробнее")
+
+    def update_cpu_details_panel(self) -> None:
+        """Обновляет проценты загрузки по ядрам (раз в секунду при видимой панели)."""
+        if not self.cpu_details_visible:
+            return
+
+        per_core_values = psutil.cpu_percent(interval=None, percpu=True)
+        for index, label in enumerate(self.cpu_core_labels):
+            value = per_core_values[index] if index < len(per_core_values) else 0.0
+            label.configure(text=f"Ядро {index + 1}: {value:.1f}%")
+
+        self.root.after(1000, self.update_cpu_details_panel)
+
     def evaluate_threshold_warnings(
         self,
         cpu_percent: float,
@@ -455,6 +594,7 @@ class PcMonitorApp:
         gpu_load_percent: float | None,
         gpu_temp_c: float | None,
     ) -> None:
+        """Сравнивает текущие метрики с порогами и обновляет текст предупреждений."""
         warnings = []
 
         if cpu_percent >= self.threshold_values["cpu"]:
@@ -502,6 +642,7 @@ class PcMonitorApp:
         return load_percent, temp_c
 
     def update_all_metrics(self) -> None:
+        """Считывает метрики, обновляет графики, пишет данные в БД и планирует следующий цикл."""
         captured_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         cpu_percent = psutil.cpu_percent(interval=None)
@@ -546,6 +687,7 @@ class PcMonitorApp:
         self.root.after(2000, self.update_all_metrics)
 
     def on_close(self) -> None:
+        """Корректно завершает приложение и освобождает ресурсы."""
         self.repo.close()
         self.root.destroy()
 
