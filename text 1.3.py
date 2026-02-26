@@ -15,7 +15,7 @@ class MetricsRepository:
 
     Что сохраняем:
     - общие метрики (CPU, RAM, GPU load, GPU temp) в таблицу measurements;
-        """
+    """
 
     def __init__(self, db_path: str = "monitor.db") -> None:
         """Инициализирует подключение к SQLite и подготавливает схему БД."""
@@ -255,15 +255,16 @@ class PcMonitorApp:
         """Собирает интерфейс приложения и запускает цикл обновления метрик."""
         self.root = root
         self.root.title("PC Monitor (CPU/RAM/GPU + SQLite)")
-        self.root.geometry("900x760")
         self.root.configure(bg="#111")
+        self.adapt_window_to_resolution()
+        self.build_scrollable_layout()
 
         self.repo = MetricsRepository(db_path="monitor.db")
         self.cpu_core_labels: list[tk.Label] = []
         self.cpu_details_visible = False
 
         self.header = tk.Label(
-            root,
+            self.content_frame,
             text="Мониторинг ПК: CPU / RAM / GPU (сохранение в SQLite)",
             font=("Segoe UI", 16, "bold"),
             fg="#f5f5f5",
@@ -271,7 +272,7 @@ class PcMonitorApp:
         )
         self.header.pack(pady=(10, 8), anchor="w", padx=14)
 
-        self.main_frame = tk.Frame(root, bg="#111")
+        self.main_frame = tk.Frame(self.content_frame, bg="#111")
         self.main_frame.pack(fill="both", expand=True, padx=14, pady=(0, 10))
 
         self.left_column = tk.Frame(self.main_frame, bg="#111")
@@ -326,8 +327,18 @@ class PcMonitorApp:
         self.threshold_config = {
             "cpu": {"title": "CPU", "unit": "%", "default": 90.0, "max": 100.0},
             "ram": {"title": "RAM", "unit": "%", "default": 90.0, "max": 100.0},
-            "gpu_load": {"title": "GPU load", "unit": "%", "default": 90.0, "max": 100.0},
-            "gpu_temp": {"title": "GPU temp", "unit": "°C", "default": 85.0, "max": 120.0},
+            "gpu_load": {
+                "title": "GPU load",
+                "unit": "%",
+                "default": 90.0,
+                "max": 100.0,
+            },
+            "gpu_temp": {
+                "title": "GPU temp",
+                "unit": "°C",
+                "default": 85.0,
+                "max": 120.0,
+            },
         }
         self.threshold_values = {
             key: float(config["default"])
@@ -343,10 +354,8 @@ class PcMonitorApp:
         self.build_threshold_controls()
 
         self.info_label = tk.Label(
-            root,
-            text=(
-                "Данные сохраняются в monitor.db: measurements (CPU/RAM/GPU)."
-            ),
+            self.content_frame,
+            text=("Данные сохраняются в monitor.db: measurements (CPU/RAM/GPU)."),
             font=("Segoe UI", 10),
             fg="#cfcfcf",
             bg="#111",
@@ -356,6 +365,78 @@ class PcMonitorApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.update_all_metrics()
+
+    def build_scrollable_layout(self) -> None:
+        """Создаёт прокручиваемый контейнер для интерфейса по вертикали."""
+        self.scroll_canvas = tk.Canvas(self.root, bg="#111", highlightthickness=0)
+        self.scroll_canvas.pack(side="left", fill="both", expand=True)
+
+        self.vertical_scrollbar = tk.Scrollbar(
+            self.root,
+            orient="vertical",
+            command=self.scroll_canvas.yview,
+        )
+        self.vertical_scrollbar.pack(side="right", fill="y")
+        self.scroll_canvas.configure(yscrollcommand=self.vertical_scrollbar.set)
+
+        self.content_frame = tk.Frame(self.scroll_canvas, bg="#111")
+        self.content_window_id = self.scroll_canvas.create_window(
+            (0, 0),
+            window=self.content_frame,
+            anchor="nw",
+        )
+
+        self.content_frame.bind("<Configure>", self.on_content_configure)
+        self.scroll_canvas.bind("<Configure>", self.on_canvas_configure)
+        self.root.bind_all("<MouseWheel>", self.on_mousewheel)
+        self.root.bind_all("<Button-4>", self.on_mousewheel)
+        self.root.bind_all("<Button-5>", self.on_mousewheel)
+
+    def on_content_configure(self, _event: tk.Event) -> None:
+        """Обновляет область прокрутки при изменении содержимого."""
+        self.scroll_canvas.configure(scrollregion=self.scroll_canvas.bbox("all"))
+
+    def on_canvas_configure(self, event: tk.Event) -> None:
+        """Растягивает внутренний контейнер по ширине canvas."""
+        self.scroll_canvas.itemconfigure(self.content_window_id, width=event.width)
+
+    def on_mousewheel(self, event: tk.Event) -> None:
+        """Прокручивает интерфейс колесом мыши (Windows/macOS/Linux)."""
+        if getattr(event, "num", None) == 4:
+            self.scroll_canvas.yview_scroll(-1, "units")
+        elif getattr(event, "num", None) == 5:
+            self.scroll_canvas.yview_scroll(1, "units")
+        elif getattr(event, "delta", 0):
+            direction = -1 if event.delta > 0 else 1
+            self.scroll_canvas.yview_scroll(direction, "units")
+
+    def adapt_window_to_resolution(self) -> None:
+        """Подбирает размер окна под текущее разрешение монитора и центрирует его."""
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        target_width = min(1280, max(900, int(screen_width * 0.85)))
+        target_height = min(900, max(680, int(screen_height * 0.85)))
+
+        self.root.minsize(900, 680)
+
+        pos_x = max((screen_width - target_width) // 2, 0)
+        pos_y = max((screen_height - target_height) // 2, 0)
+        self.root.geometry(f"{target_width}x{target_height}+{pos_x}+{pos_y}")
+
+    def adapt_window_to_resolution(self) -> None:
+        """Подбирает размер окна под текущее разрешение монитора и центрирует его."""
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        target_width = min(1280, max(900, int(screen_width * 0.85)))
+        target_height = min(900, max(680, int(screen_height * 0.85)))
+
+        self.root.minsize(900, 680)
+
+        pos_x = max((screen_width - target_width) // 2, 0)
+        pos_y = max((screen_height - target_height) // 2, 0)
+        self.root.geometry(f"{target_width}x{target_height}+{pos_x}+{pos_y}")
 
     def build_threshold_controls(self) -> None:
         """Создаёт панель ввода пороговых значений и блок предупреждений."""
@@ -406,7 +487,9 @@ class PcMonitorApp:
             entry.pack(side="left", padx=(6, 0))
             self.threshold_entries[key] = entry
 
-        self.threshold_status_var = tk.StringVar(value="Пороги установлены по умолчанию.")
+        self.threshold_status_var = tk.StringVar(
+            value="Пороги установлены по умолчанию."
+        )
         status_label = tk.Label(
             controls_frame,
             textvariable=self.threshold_status_var,
@@ -471,7 +554,10 @@ class PcMonitorApp:
         self.threshold_values = updated_values
         self.threshold_status_var.set("Новые пороги успешно применены.")
 
-        if self.last_metrics["cpu"] is not None and self.last_metrics["ram"] is not None:
+        if (
+            self.last_metrics["cpu"] is not None
+            and self.last_metrics["ram"] is not None
+        ):
             self.evaluate_threshold_warnings(
                 cpu_percent=float(self.last_metrics["cpu"]),
                 ram_percent=float(self.last_metrics["ram"]),
@@ -481,7 +567,9 @@ class PcMonitorApp:
 
     def build_cpu_details_panel(self) -> None:
         """Создаёт встроенную панель с нагрузкой по каждому логическому ядру CPU."""
-        self.cpu_details_frame = tk.Frame(self.right_panels_row, bg="#1a1a1a", padx=12, pady=12)
+        self.cpu_details_frame = tk.Frame(
+            self.right_panels_row, bg="#1a1a1a", padx=12, pady=12
+        )
 
         title_label = tk.Label(
             self.cpu_details_frame,
@@ -571,7 +659,10 @@ class PcMonitorApp:
                 f"RAM: {ram_percent:.1f}% (порог {self.threshold_values['ram']:.1f}%)"
             )
 
-        if gpu_load_percent is not None and gpu_load_percent >= self.threshold_values["gpu_load"]:
+        if (
+            gpu_load_percent is not None
+            and gpu_load_percent >= self.threshold_values["gpu_load"]
+        ):
             warnings.append(
                 "GPU load: "
                 f"{gpu_load_percent:.1f}% (порог {self.threshold_values['gpu_load']:.1f}%)"
@@ -583,7 +674,9 @@ class PcMonitorApp:
             )
 
         if warnings:
-            self.warning_var.set("⚠ Превышены критические уровни:\n" + "\n".join(warnings))
+            self.warning_var.set(
+                "⚠ Превышены критические уровни:\n" + "\n".join(warnings)
+            )
             self.warning_label.configure(fg="#ff5a5a")
         else:
             self.warning_var.set("Предупреждений нет.")
@@ -613,18 +706,28 @@ class PcMonitorApp:
         ram_percent = psutil.virtual_memory().percent
         gpu_load_percent, gpu_temp_c = self.read_gpu_metrics()
 
-        self.cpu_chart.update_value(cpu_percent, f"Текущая загрузка CPU: {cpu_percent:.1f}%")
-        self.ram_chart.update_value(ram_percent, f"Текущая загрузка RAM: {ram_percent:.1f}%")
+        self.cpu_chart.update_value(
+            cpu_percent, f"Текущая загрузка CPU: {cpu_percent:.1f}%"
+        )
+        self.ram_chart.update_value(
+            ram_percent, f"Текущая загрузка RAM: {ram_percent:.1f}%"
+        )
 
         if gpu_load_percent is None:
-            self.gpu_load_chart.update_value(0.0, "GPU load: N/A (видеокарта не обнаружена)")
+            self.gpu_load_chart.update_value(
+                0.0, "GPU load: N/A (видеокарта не обнаружена)"
+            )
         else:
-            self.gpu_load_chart.update_value(gpu_load_percent, f"Текущая загрузка GPU: {gpu_load_percent:.1f}%")
+            self.gpu_load_chart.update_value(
+                gpu_load_percent, f"Текущая загрузка GPU: {gpu_load_percent:.1f}%"
+            )
 
         if gpu_temp_c is None:
             self.gpu_temp_chart.update_value(0.0, "GPU temp: N/A")
         else:
-            self.gpu_temp_chart.update_value(gpu_temp_c, f"Текущая температура GPU: {gpu_temp_c:.1f}°C")
+            self.gpu_temp_chart.update_value(
+                gpu_temp_c, f"Текущая температура GPU: {gpu_temp_c:.1f}°C"
+            )
 
         self.repo.insert_measurement(
             captured_at=captured_at,
