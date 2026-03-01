@@ -163,7 +163,7 @@ class MetricChart:
             )
 
             self.canvas.create_text(
-                plot_left - 12,
+                plot_left - 2,
                 y,
                 text=f"{value:.0f}{self.unit}",
                 anchor="e",
@@ -257,7 +257,8 @@ class PcMonitorApp:
         self.root.title("PC Monitor (CPU/RAM/GPU + SQLite)")
         self.root.configure(bg="#111")
         self.adapt_window_to_resolution()
-        self.build_scrollable_layout()
+        self.content_frame = tk.Frame(self.root, bg="#111")
+        self.content_frame.pack(fill="both", expand=True)
 
         self.repo = MetricsRepository(db_path="monitor.db")
         self.cpu_core_labels: list[tk.Label] = []
@@ -284,12 +285,42 @@ class PcMonitorApp:
         self.right_panels_row = tk.Frame(self.right_column, bg="#111")
         self.right_panels_row.pack(fill="x", anchor="n")
 
-        self.cpu_chart = MetricChart(
-            parent=self.left_column,
+        self.charts_grid_frame = tk.Frame(self.left_column, bg="#111")
+        self.charts_grid_frame.pack(fill="both", expand=True)
+        self.charts_grid_frame.grid_columnconfigure(0, weight=1)
+        self.charts_grid_frame.grid_columnconfigure(1, weight=1)
+
+        self.cpu_chart = self.create_chart_cell(
+            row=0,
+            column=0,
             title="Загрузка процессора (CPU)",
             line_color="#2bd66f",
             unit="%",
         )
+        self.ram_chart = self.create_chart_cell(
+            row=0,
+            column=1,
+            title="Загруженность оперативной памяти (RAM)",
+            line_color="#4da3ff",
+            unit="%",
+        )
+        self.gpu_load_chart = self.create_chart_cell(
+            row=1,
+            column=0,
+            title="Нагруженность видеокарты (GPU)",
+            line_color="#ff4d8b",
+            unit="%",
+        )
+        self.gpu_temp_chart = self.create_chart_cell(
+            row=1,
+            column=1,
+            title="Температура видеокарты (GPU)",
+            line_color="#ff8f3d",
+            y_min=0,
+            y_max=100,
+            unit="°C",
+        )
+
         self.cpu_details_button = tk.Button(
             self.left_column,
             text="Подробнее",
@@ -302,27 +333,7 @@ class PcMonitorApp:
             padx=10,
             pady=4,
         )
-        self.cpu_details_button.pack(anchor="w", pady=(0, 10))
-        self.ram_chart = MetricChart(
-            parent=self.left_column,
-            title="Загруженность оперативной памяти (RAM)",
-            line_color="#4da3ff",
-            unit="%",
-        )
-        self.gpu_load_chart = MetricChart(
-            parent=self.left_column,
-            title="Нагруженность видеокарты (GPU)",
-            line_color="#ff4d8b",
-            unit="%",
-        )
-        self.gpu_temp_chart = MetricChart(
-            parent=self.left_column,
-            title="Температура видеокарты (GPU)",
-            line_color="#ff8f3d",
-            y_min=0,
-            y_max=120,
-            unit="°C",
-        )
+        self.cpu_details_button.pack(anchor="w", pady=(4, 10))
 
         self.threshold_config = {
             "cpu": {"title": "CPU", "unit": "%", "default": 90.0, "max": 100.0},
@@ -366,63 +377,35 @@ class PcMonitorApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.update_all_metrics()
 
-    def build_scrollable_layout(self) -> None:
-        """Создаёт прокручиваемый контейнер для интерфейса по вертикали."""
-        self.scroll_canvas = tk.Canvas(self.root, bg="#111", highlightthickness=0)
-        self.scroll_canvas.pack(side="left", fill="both", expand=True)
+    def create_chart_cell(
+        self,
+        row: int,
+        column: int,
+        title: str,
+        line_color: str,
+        y_min: float = 0.0,
+        y_max: float = 100.0,
+        unit: str = "%",
+    ) -> MetricChart:
+        """Создаёт ячейку сетки и размещает в ней график метрики."""
+        cell = tk.Frame(self.charts_grid_frame, bg="#111")
+        cell.grid(row=row, column=column, padx=6, pady=6, sticky="nsew")
 
-        self.vertical_scrollbar = tk.Scrollbar(
-            self.root,
-            orient="vertical",
-            command=self.scroll_canvas.yview,
+        chart = MetricChart(
+            parent=cell,
+            title=title,
+            line_color=line_color,
+            width=360,
+            height=130,
+            padding=32,
+            max_points=80,
+            y_min=y_min,
+            y_max=y_max,
+            unit=unit,
         )
-        self.vertical_scrollbar.pack(side="right", fill="y")
-        self.scroll_canvas.configure(yscrollcommand=self.vertical_scrollbar.set)
+        return chart
 
-        self.content_frame = tk.Frame(self.scroll_canvas, bg="#111")
-        self.content_window_id = self.scroll_canvas.create_window(
-            (0, 0),
-            window=self.content_frame,
-            anchor="nw",
-        )
 
-        self.content_frame.bind("<Configure>", self.on_content_configure)
-        self.scroll_canvas.bind("<Configure>", self.on_canvas_configure)
-        self.root.bind_all("<MouseWheel>", self.on_mousewheel)
-        self.root.bind_all("<Button-4>", self.on_mousewheel)
-        self.root.bind_all("<Button-5>", self.on_mousewheel)
-
-    def on_content_configure(self, _event: tk.Event) -> None:
-        """Обновляет область прокрутки при изменении содержимого."""
-        self.scroll_canvas.configure(scrollregion=self.scroll_canvas.bbox("all"))
-
-    def on_canvas_configure(self, event: tk.Event) -> None:
-        """Растягивает внутренний контейнер по ширине canvas."""
-        self.scroll_canvas.itemconfigure(self.content_window_id, width=event.width)
-
-    def on_mousewheel(self, event: tk.Event) -> None:
-        """Прокручивает интерфейс колесом мыши (Windows/macOS/Linux)."""
-        if getattr(event, "num", None) == 4:
-            self.scroll_canvas.yview_scroll(-1, "units")
-        elif getattr(event, "num", None) == 5:
-            self.scroll_canvas.yview_scroll(1, "units")
-        elif getattr(event, "delta", 0):
-            direction = -1 if event.delta > 0 else 1
-            self.scroll_canvas.yview_scroll(direction, "units")
-
-    def adapt_window_to_resolution(self) -> None:
-        """Подбирает размер окна под текущее разрешение монитора и центрирует его."""
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-
-        target_width = min(1280, max(900, int(screen_width * 0.85)))
-        target_height = min(900, max(680, int(screen_height * 0.85)))
-
-        self.root.minsize(900, 680)
-
-        pos_x = max((screen_width - target_width) // 2, 0)
-        pos_y = max((screen_height - target_height) // 2, 0)
-        self.root.geometry(f"{target_width}x{target_height}+{pos_x}+{pos_y}")
 
     def adapt_window_to_resolution(self) -> None:
         """Подбирает размер окна под текущее разрешение монитора и центрирует его."""
