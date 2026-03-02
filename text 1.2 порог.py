@@ -8,6 +8,11 @@ import setuptools
 import GPUtil
 import psutil
 
+try:
+    import wmi
+except ImportError:
+    wmi = None
+
 
 class MetricsRepository:
     """
@@ -35,10 +40,13 @@ class MetricsRepository:
                 cpu_percent REAL NOT NULL,
                 ram_percent REAL NOT NULL,
                 gpu_load_percent REAL,
-                gpu_temp_c REAL
+                gpu_temp_c REAL,
+                psu_power_w REAL
             )
             """
         )
+
+        self.ensure_column("measurements", "psu_power_w", "REAL")
 
         self.connection.commit()
 
@@ -49,18 +57,38 @@ class MetricsRepository:
         ram_percent: float,
         gpu_load_percent: float | None,
         gpu_temp_c: float | None,
+        psu_power_w: float | None,
     ) -> None:
         """Сохраняет один снимок метрик в таблицу measurements."""
         self.connection.execute(
             """
             INSERT INTO measurements (
-                captured_at, cpu_percent, ram_percent, gpu_load_percent, gpu_temp_c
+                captured_at, cpu_percent, ram_percent, gpu_load_percent, gpu_temp_c, psu_power_w
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (captured_at, cpu_percent, ram_percent, gpu_load_percent, gpu_temp_c),
+            (
+                captured_at,
+                cpu_percent,
+                ram_percent,
+                gpu_load_percent,
+                gpu_temp_c,
+                psu_power_w,
+            ),
         )
         self.connection.commit()
+
+    def ensure_column(self, table_name: str, column_name: str, column_type: str) -> None:
+        """Добавляет колонку в существующую таблицу, если её ещё нет."""
+        pragma_result = self.connection.execute(
+            f"PRAGMA table_info({table_name})"
+        ).fetchall()
+        existing_columns = {row[1] for row in pragma_result}
+
+        if column_name not in existing_columns:
+            self.connection.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+            )
 
     def close(self) -> None:
         """Закрывает соединение с базой данных."""
@@ -163,7 +191,7 @@ class MetricChart:
             )
 
             self.canvas.create_text(
-                plot_left - 12,
+                plot_left - 2,
                 y,
                 text=f"{value:.0f}{self.unit}",
                 anchor="e",
@@ -254,15 +282,16 @@ class PcMonitorApp:
     def __init__(self, root: tk.Tk) -> None:
         """Собирает интерфейс приложения и запускает цикл обновления метрик."""
         self.root = root
-        self.root.title("PC Monitor (CPU/RAM/GPU + SQLite)")
+        self.root.title("PC Monitor (CPU/RAM/GPU/PSU + SQLite)")
         self.root.configure(bg="#111")
         self.adapt_window_to_resolution()
-        self.build_scrollable_layout()
+        self.content_frame = tk.Frame(self.root, bg="#111")
+        self.content_frame.pack(fill="both", expand=True)
 
         self.repo = MetricsRepository(db_path="monitor.db")
         self.cpu_core_labels: list[tk.Label] = []
         self.cpu_details_visible = False
-
+        self.psu_status_message = "PSU power: N/A"
         self.header = tk.Label(
             self.content_frame,
             text="Мониторинг ПК: CPU / RAM / GPU (сохранение в SQLite)",
@@ -316,10 +345,20 @@ class PcMonitorApp:
             title="Температура видеокарты (GPU)",
             line_color="#ff8f3d",
             y_min=0,
-            y_max=120,
+            y_max=100,
             unit="°C",
         )
 
+        self.psu_power_chart = self.create_chart_cell(
+            row=2,
+            column=0,
+            title="Потребление блока питания (PSU)",
+            line_color="#ffd24d",
+            y_min=0,
+            y_max=1000,
+            unit="W",
+        )
+        
         self.cpu_details_button = tk.Button(
             self.left_column,
             text="Подробнее",
@@ -332,7 +371,7 @@ class PcMonitorApp:
             padx=10,
             pady=4,
         )
-        self.cpu_details_button.pack(anchor="w", pady=(2, 10))
+        self.cpu_details_button.pack(anchor="w", pady=(4, 10))
 
         self.threshold_config = {
             "cpu": {"title": "CPU", "unit": "%", "default": 90.0, "max": 100.0},
@@ -360,12 +399,13 @@ class PcMonitorApp:
             "ram": None,
             "gpu_load": None,
             "gpu_temp": None,
+            "psu_power": None,
         }
         self.build_threshold_controls()
 
         self.info_label = tk.Label(
             self.content_frame,
-            text=("Данные сохраняются в monitor.db: measurements (CPU/RAM/GPU)."),
+            text=("Данные сохраняются в monitor.db: measurements (CPU/RAM/GPU/PSU)."),
             font=("Segoe UI", 10),
             fg="#cfcfcf",
             bg="#111",
@@ -404,63 +444,7 @@ class PcMonitorApp:
         )
         return chart
 
-    def build_scrollable_layout(self) -> None:
-        """Создаёт прокручиваемый контейнер для интерфейса по вертикали."""
-        self.scroll_canvas = tk.Canvas(self.root, bg="#111", highlightthickness=0)
-        self.scroll_canvas.pack(side="left", fill="both", expand=True)
 
-        self.vertical_scrollbar = tk.Scrollbar(
-            self.root,
-            orient="vertical",
-            command=self.scroll_canvas.yview,
-        )
-        self.vertical_scrollbar.pack(side="right", fill="y")
-        self.scroll_canvas.configure(yscrollcommand=self.vertical_scrollbar.set)
-
-        self.content_frame = tk.Frame(self.scroll_canvas, bg="#111")
-        self.content_window_id = self.scroll_canvas.create_window(
-            (0, 0),
-            window=self.content_frame,
-            anchor="nw",
-        )
-
-        self.content_frame.bind("<Configure>", self.on_content_configure)
-        self.scroll_canvas.bind("<Configure>", self.on_canvas_configure)
-        self.root.bind_all("<MouseWheel>", self.on_mousewheel)
-        self.root.bind_all("<Button-4>", self.on_mousewheel)
-        self.root.bind_all("<Button-5>", self.on_mousewheel)
-
-    def on_content_configure(self, _event: tk.Event) -> None:
-        """Обновляет область прокрутки при изменении содержимого."""
-        self.scroll_canvas.configure(scrollregion=self.scroll_canvas.bbox("all"))
-
-    def on_canvas_configure(self, event: tk.Event) -> None:
-        """Растягивает внутренний контейнер по ширине canvas."""
-        self.scroll_canvas.itemconfigure(self.content_window_id, width=event.width)
-
-    def on_mousewheel(self, event: tk.Event) -> None:
-        """Прокручивает интерфейс колесом мыши (Windows/macOS/Linux)."""
-        if getattr(event, "num", None) == 4:
-            self.scroll_canvas.yview_scroll(-1, "units")
-        elif getattr(event, "num", None) == 5:
-            self.scroll_canvas.yview_scroll(1, "units")
-        elif getattr(event, "delta", 0):
-            direction = -1 if event.delta > 0 else 1
-            self.scroll_canvas.yview_scroll(direction, "units")
-
-    def adapt_window_to_resolution(self) -> None:
-        """Подбирает размер окна под текущее разрешение монитора и центрирует его."""
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-
-        target_width = min(1280, max(900, int(screen_width * 0.85)))
-        target_height = min(900, max(680, int(screen_height * 0.85)))
-
-        self.root.minsize(900, 680)
-
-        pos_x = max((screen_width - target_width) // 2, 0)
-        pos_y = max((screen_height - target_height) // 2, 0)
-        self.root.geometry(f"{target_width}x{target_height}+{pos_x}+{pos_y}")
 
     def adapt_window_to_resolution(self) -> None:
         """Подбирает размер окна под текущее разрешение монитора и центрирует его."""
@@ -720,6 +704,73 @@ class PcMonitorApp:
             self.warning_var.set("Предупреждений нет.")
             self.warning_label.configure(fg="#58c46b")
 
+    def read_psu_power(self) -> tuple[float | None, str]:
+        """
+        Читает мощность системы/PSU в ваттах через WMI.
+
+        Ищем сенсоры в пространствах имен LibreHardwareMonitor/OpenHardwareMonitor.
+        В реальных системах отдельный датчик "PSU" встречается редко, поэтому
+        используем эвристику по названию/типу оборудования.
+        """
+        if wmi is None:
+            return None, "PSU power: N/A (установите пакет `wmi`)"
+
+        namespaces = ["root\\LibreHardwareMonitor", "root\\OpenHardwareMonitor"]
+        sensors = None
+
+        for namespace in namespaces:
+            try:
+                client = wmi.WMI(namespace=namespace)
+                sensors = client.Sensor()
+                if sensors:
+                    break
+            except Exception:
+                continue
+
+        if not sensors:
+            return None, "PSU power: N/A (запустите LibreHardwareMonitor с WMI)"
+
+        primary_keywords = ("psu", "total", "system")
+        fallback_keywords = ("package", "cpu package", "gpu")
+
+        primary_candidates: list[float] = []
+        fallback_candidates: list[float] = []
+
+        for sensor in sensors:
+            sensor_type = str(getattr(sensor, "SensorType", "")).lower()
+            if sensor_type != "power":
+                continue
+
+            value = getattr(sensor, "Value", None)
+            if value is None:
+                continue
+
+            try:
+                value_float = float(value)
+            except (TypeError, ValueError):
+                continue
+
+            if value_float < 0:
+                continue
+
+            name = str(getattr(sensor, "Name", "")).lower()
+            hardware = str(getattr(sensor, "Hardware", "")).lower()
+            combined = f"{name} {hardware}"
+
+            if any(keyword in combined for keyword in primary_keywords):
+                primary_candidates.append(value_float)
+            elif any(keyword in combined for keyword in fallback_keywords):
+                fallback_candidates.append(value_float)
+
+        if primary_candidates:
+            return max(primary_candidates), "источник WMI найден"
+
+        if fallback_candidates:
+            return sum(fallback_candidates), "оценка по power-сенсорам CPU/GPU"
+
+        return None, "PSU power: N/A (в WMI нет power-сенсоров)"
+
+
     @staticmethod
     def read_gpu_metrics() -> tuple[float | None, float | None]:
         """Читаем первую доступную GPU через GPUtil: (load%, tempC)."""
@@ -743,6 +794,7 @@ class PcMonitorApp:
         cpu_percent = psutil.cpu_percent(interval=None)
         ram_percent = psutil.virtual_memory().percent
         gpu_load_percent, gpu_temp_c = self.read_gpu_metrics()
+        psu_power_w, psu_status_message = self.read_psu_power()
 
         self.cpu_chart.update_value(
             cpu_percent, f"Текущая загрузка CPU: {cpu_percent:.1f}%"
@@ -767,12 +819,22 @@ class PcMonitorApp:
                 gpu_temp_c, f"Текущая температура GPU: {gpu_temp_c:.1f}°C"
             )
 
+        self.psu_status_message = psu_status_message
+        if psu_power_w is None:
+            self.psu_power_chart.update_value(0.0, self.psu_status_message)
+        else:
+            self.psu_power_chart.update_value(
+                psu_power_w,
+                f"Текущее потребление PSU: {psu_power_w:.1f}W ({self.psu_status_message})",
+            )
+
         self.repo.insert_measurement(
             captured_at=captured_at,
             cpu_percent=cpu_percent,
             ram_percent=ram_percent,
             gpu_load_percent=gpu_load_percent,
             gpu_temp_c=gpu_temp_c,
+            psu_power_w=psu_power_w,
         )
 
         self.last_metrics = {
@@ -780,6 +842,7 @@ class PcMonitorApp:
             "ram": ram_percent,
             "gpu_load": gpu_load_percent,
             "gpu_temp": gpu_temp_c,
+            "psu_power": psu_power_w,
         }
 
         self.evaluate_threshold_warnings(
