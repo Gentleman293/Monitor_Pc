@@ -1,5 +1,7 @@
 import sqlite3
 import tkinter as tk
+import subprocess
+import platform
 
 from collections import deque
 from datetime import datetime
@@ -7,11 +9,6 @@ from datetime import datetime
 import setuptools
 import GPUtil
 import psutil
-
-try:
-    import wmi
-except ImportError:
-    wmi = None
 
 
 class MetricsRepository:
@@ -40,13 +37,10 @@ class MetricsRepository:
                 cpu_percent REAL NOT NULL,
                 ram_percent REAL NOT NULL,
                 gpu_load_percent REAL,
-                gpu_temp_c REAL,
-                psu_power_w REAL
+                gpu_temp_c REAL
             )
             """
         )
-
-        self.ensure_column("measurements", "psu_power_w", "REAL")
 
         self.connection.commit()
 
@@ -57,38 +51,18 @@ class MetricsRepository:
         ram_percent: float,
         gpu_load_percent: float | None,
         gpu_temp_c: float | None,
-        psu_power_w: float | None,
     ) -> None:
         """Сохраняет один снимок метрик в таблицу measurements."""
         self.connection.execute(
             """
             INSERT INTO measurements (
-                captured_at, cpu_percent, ram_percent, gpu_load_percent, gpu_temp_c, psu_power_w
+                captured_at, cpu_percent, ram_percent, gpu_load_percent, gpu_temp_c
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (
-                captured_at,
-                cpu_percent,
-                ram_percent,
-                gpu_load_percent,
-                gpu_temp_c,
-                psu_power_w,
-            ),
+            (captured_at, cpu_percent, ram_percent, gpu_load_percent, gpu_temp_c),
         )
         self.connection.commit()
-
-    def ensure_column(self, table_name: str, column_name: str, column_type: str) -> None:
-        """Добавляет колонку в существующую таблицу, если её ещё нет."""
-        pragma_result = self.connection.execute(
-            f"PRAGMA table_info({table_name})"
-        ).fetchall()
-        existing_columns = {row[1] for row in pragma_result}
-
-        if column_name not in existing_columns:
-            self.connection.execute(
-                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
-            )
 
     def close(self) -> None:
         """Закрывает соединение с базой данных."""
@@ -282,7 +256,7 @@ class PcMonitorApp:
     def __init__(self, root: tk.Tk) -> None:
         """Собирает интерфейс приложения и запускает цикл обновления метрик."""
         self.root = root
-        self.root.title("PC Monitor (CPU/RAM/GPU/PSU + SQLite)")
+        self.root.title("PC Monitor (CPU/RAM/GPU + SQLite)")
         self.root.configure(bg="#111")
         self.adapt_window_to_resolution()
         self.content_frame = tk.Frame(self.root, bg="#111")
@@ -291,7 +265,7 @@ class PcMonitorApp:
         self.repo = MetricsRepository(db_path="monitor.db")
         self.cpu_core_labels: list[tk.Label] = []
         self.cpu_details_visible = False
-        self.psu_status_message = "PSU power: N/A"
+
         self.header = tk.Label(
             self.content_frame,
             text="Мониторинг ПК: CPU / RAM / GPU (сохранение в SQLite)",
@@ -349,18 +323,28 @@ class PcMonitorApp:
             unit="°C",
         )
 
-        self.psu_power_chart = self.create_chart_cell(
-            row=2,
-            column=0,
-            title="Потребление блока питания (PSU)",
-            line_color="#ffd24d",
-            y_min=0,
-            y_max=1000,
-            unit="W",
+        self.specs_visible = False
+        self.specs_panel_frame = tk.Frame(
+            self.left_column, bg="#1a1a1a", padx=12, pady=10
         )
-        
+        self.specs_header_label = tk.Label(
+            self.specs_panel_frame,
+            text="Основные характеристики компьютера",
+            font=("Segoe UI", 12, "bold"),
+            fg="#f5f5f5",
+            bg="#1a1a1a",
+            anchor="w",
+        )
+        self.specs_header_label.pack(fill="x", pady=(0, 8))
+
+        self.specs_values_container = tk.Frame(self.specs_panel_frame, bg="#1a1a1a")
+        self.specs_values_container.pack(fill="x")
+
+        self.buttons_row = tk.Frame(self.left_column, bg="#111")
+        self.buttons_row.pack(fill="x", pady=(4, 10))
+
         self.cpu_details_button = tk.Button(
-            self.left_column,
+            self.buttons_row,
             text="Подробнее",
             command=self.toggle_cpu_details_panel,
             bg="#2b2b2b",
@@ -371,7 +355,21 @@ class PcMonitorApp:
             padx=10,
             pady=4,
         )
-        self.cpu_details_button.pack(anchor="w", pady=(4, 10))
+        self.cpu_details_button.pack(side="left")
+
+        self.specs_button = tk.Button(
+            self.buttons_row,
+            text="Характеристики",
+            command=self.toggle_specs_panel,
+            bg="#2b2b2b",
+            fg="#f5f5f5",
+            activebackground="#3a3a3a",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=10,
+            pady=4,
+        )
+        self.specs_button.pack(side="left", padx=(8, 0))
 
         self.threshold_config = {
             "cpu": {"title": "CPU", "unit": "%", "default": 90.0, "max": 100.0},
@@ -399,13 +397,12 @@ class PcMonitorApp:
             "ram": None,
             "gpu_load": None,
             "gpu_temp": None,
-            "psu_power": None,
         }
         self.build_threshold_controls()
 
         self.info_label = tk.Label(
             self.content_frame,
-            text=("Данные сохраняются в monitor.db: measurements (CPU/RAM/GPU/PSU)."),
+            text=("Данные сохраняются в monitor.db: measurements (CPU/RAM/GPU)."),
             font=("Segoe UI", 10),
             fg="#cfcfcf",
             bg="#111",
@@ -444,8 +441,6 @@ class PcMonitorApp:
         )
         return chart
 
-
-
     def adapt_window_to_resolution(self) -> None:
         """Подбирает размер окна под текущее разрешение монитора и центрирует его."""
         screen_width = self.root.winfo_screenwidth()
@@ -459,6 +454,134 @@ class PcMonitorApp:
         pos_x = max((screen_width - target_width) // 2, 0)
         pos_y = max((screen_height - target_height) // 2, 0)
         self.root.geometry(f"{target_width}x{target_height}+{pos_x}+{pos_y}")
+
+        def safe_command_output(command: list[str]) -> str:
+            """Безопасно выполняет команду и возвращает вывод без исключений."""
+
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                check=False,
+            )
+        except Exception:
+            return ""
+        return completed.stdout.strip()
+
+    def get_ram_type(self) -> str:
+        """Пробует определить тип RAM. Для не-Windows возвращает N/A."""
+        if platform.system() != "Windows":
+            return "N/A"
+
+        output = self.safe_command_output(
+            ["wmic", "memorychip", "get", "SMBIOSMemoryType"]
+        )
+        if not output:
+            return "N/A"
+
+        type_map = {
+            20: "DDR",
+            21: "DDR2",
+            24: "DDR3",
+            26: "DDR4",
+            34: "DDR5",
+        }
+
+        ram_types = set()
+        for line in output.splitlines():
+            line = line.strip()
+            if line.isdigit() and int(line) in type_map:
+                ram_types.add(type_map[int(line)])
+
+        return ", ".join(sorted(ram_types)) if ram_types else "N/A"
+
+    def collect_pc_specs(self) -> dict[str, str]:
+        """Собирает основные характеристики ПК для отдельного окна."""
+
+        cpu_title = "N/A"
+
+        if platform.system() == "Windows":
+            cpu_model_output = self.safe_command_output(["wmic", "cpu", "get", "Name"])
+            cpu_lines = [
+                line.strip() for line in cpu_model_output.splitlines() if line.strip()
+            ]
+        if len(cpu_lines) > 1:
+            cpu_title = cpu_lines[1]
+
+        if cpu_title == "N/A":
+            cpu_title = platform.processor().strip() or "N/A"
+
+        gpu_name = "N/A"
+        try:
+            gpus = GPUtil.getGPUs()
+            if gpus:
+                gpu_name = gpus[0].name
+        except Exception:
+            gpu_name = "N/A"
+
+        total_ram_gb = psutil.virtual_memory().total / (1024**3)
+        ram_type = self.get_ram_type()
+
+        return {
+            "Процессор": cpu_title,
+            "Видеокарта": gpu_name,
+            "Тип оперативной памяти": ram_type,
+            "Объём оперативной памяти": f"{total_ram_gb:.1f} ГБ",
+        }
+
+    def update_specs_panel(self) -> None:
+        """Обновляет содержимое встроенной панели характеристик."""
+        for child in self.specs_values_container.winfo_children():
+            child.destroy()
+
+        try:
+            specs = self.collect_pc_specs()
+        except Exception:
+            specs = {
+                "Процессор": "N/A",
+                "Видеокарта": "N/A",
+                "Тип оперативной памяти": "N/A",
+                "Объём оперативной памяти": "N/A",
+            }
+
+        for label, value in specs.items():
+            row = tk.Frame(self.specs_values_container, bg="#1a1a1a")
+            row.pack(fill="x", pady=2)
+
+            title = tk.Label(
+                row,
+                text=f"{label}:",
+                font=("Segoe UI", 10, "bold"),
+                fg="#dcdcdc",
+                bg="#1a1a1a",
+                width=24,
+                anchor="w",
+            )
+            title.pack(side="left")
+
+            content = tk.Label(
+                row,
+                text=value,
+                font=("Segoe UI", 10),
+                fg="#f5f5f5",
+                bg="#1a1a1a",
+                anchor="w",
+                justify="left",
+                wraplength=500,
+            )
+            content.pack(side="left", fill="x", expand=True)
+
+    def toggle_specs_panel(self) -> None:
+        """Показывает или скрывает встроенную панель характеристик."""
+        if self.specs_visible:
+            self.specs_panel_frame.pack_forget()
+            self.specs_visible = False
+            return
+        self.update_specs_panel()
+        self.specs_panel_frame.pack(fill="x", pady=(0, 8), before=self.buttons_row)
+        self.specs_visible = True
 
     def build_threshold_controls(self) -> None:
         """Создаёт панель ввода пороговых значений и блок предупреждений."""
@@ -704,73 +827,6 @@ class PcMonitorApp:
             self.warning_var.set("Предупреждений нет.")
             self.warning_label.configure(fg="#58c46b")
 
-    def read_psu_power(self) -> tuple[float | None, str]:
-        """
-        Читает мощность системы/PSU в ваттах через WMI.
-
-        Ищем сенсоры в пространствах имен LibreHardwareMonitor/OpenHardwareMonitor.
-        В реальных системах отдельный датчик "PSU" встречается редко, поэтому
-        используем эвристику по названию/типу оборудования.
-        """
-        if wmi is None:
-            return None, "PSU power: N/A (установите пакет `wmi`)"
-
-        namespaces = ["root\\LibreHardwareMonitor", "root\\OpenHardwareMonitor"]
-        sensors = None
-
-        for namespace in namespaces:
-            try:
-                client = wmi.WMI(namespace=namespace)
-                sensors = client.Sensor()
-                if sensors:
-                    break
-            except Exception:
-                continue
-
-        if not sensors:
-            return None, "PSU power: N/A (запустите LibreHardwareMonitor с WMI)"
-
-        primary_keywords = ("psu", "total", "system")
-        fallback_keywords = ("package", "cpu package", "gpu")
-
-        primary_candidates: list[float] = []
-        fallback_candidates: list[float] = []
-
-        for sensor in sensors:
-            sensor_type = str(getattr(sensor, "SensorType", "")).lower()
-            if sensor_type != "power":
-                continue
-
-            value = getattr(sensor, "Value", None)
-            if value is None:
-                continue
-
-            try:
-                value_float = float(value)
-            except (TypeError, ValueError):
-                continue
-
-            if value_float < 0:
-                continue
-
-            name = str(getattr(sensor, "Name", "")).lower()
-            hardware = str(getattr(sensor, "Hardware", "")).lower()
-            combined = f"{name} {hardware}"
-
-            if any(keyword in combined for keyword in primary_keywords):
-                primary_candidates.append(value_float)
-            elif any(keyword in combined for keyword in fallback_keywords):
-                fallback_candidates.append(value_float)
-
-        if primary_candidates:
-            return max(primary_candidates), "источник WMI найден"
-
-        if fallback_candidates:
-            return sum(fallback_candidates), "оценка по power-сенсорам CPU/GPU"
-
-        return None, "PSU power: N/A (в WMI нет power-сенсоров)"
-
-
     @staticmethod
     def read_gpu_metrics() -> tuple[float | None, float | None]:
         """Читаем первую доступную GPU через GPUtil: (load%, tempC)."""
@@ -794,7 +850,6 @@ class PcMonitorApp:
         cpu_percent = psutil.cpu_percent(interval=None)
         ram_percent = psutil.virtual_memory().percent
         gpu_load_percent, gpu_temp_c = self.read_gpu_metrics()
-        psu_power_w, psu_status_message = self.read_psu_power()
 
         self.cpu_chart.update_value(
             cpu_percent, f"Текущая загрузка CPU: {cpu_percent:.1f}%"
@@ -819,22 +874,12 @@ class PcMonitorApp:
                 gpu_temp_c, f"Текущая температура GPU: {gpu_temp_c:.1f}°C"
             )
 
-        self.psu_status_message = psu_status_message
-        if psu_power_w is None:
-            self.psu_power_chart.update_value(0.0, self.psu_status_message)
-        else:
-            self.psu_power_chart.update_value(
-                psu_power_w,
-                f"Текущее потребление PSU: {psu_power_w:.1f}W ({self.psu_status_message})",
-            )
-
         self.repo.insert_measurement(
             captured_at=captured_at,
             cpu_percent=cpu_percent,
             ram_percent=ram_percent,
             gpu_load_percent=gpu_load_percent,
             gpu_temp_c=gpu_temp_c,
-            psu_power_w=psu_power_w,
         )
 
         self.last_metrics = {
@@ -842,7 +887,6 @@ class PcMonitorApp:
             "ram": ram_percent,
             "gpu_load": gpu_load_percent,
             "gpu_temp": gpu_temp_c,
-            "psu_power": psu_power_w,
         }
 
         self.evaluate_threshold_warnings(
@@ -856,6 +900,7 @@ class PcMonitorApp:
 
     def on_close(self) -> None:
         """Корректно завершает приложение и освобождает ресурсы."""
+
         self.repo.close()
         self.root.destroy()
 
