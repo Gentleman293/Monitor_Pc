@@ -1,5 +1,7 @@
 import sqlite3
 import tkinter as tk
+import subprocess
+import platform
 
 from collections import deque
 from datetime import datetime
@@ -7,6 +9,7 @@ from datetime import datetime
 import setuptools
 import GPUtil
 import psutil
+import wmi
 
 
 class MetricsRepository:
@@ -321,8 +324,28 @@ class PcMonitorApp:
             unit="°C",
         )
 
+        self.specs_visible = False
+        self.specs_panel_frame = tk.Frame(
+            self.left_column, bg="#1a1a1a", padx=12, pady=10
+        )
+        self.specs_header_label = tk.Label(
+            self.specs_panel_frame,
+            text="Основные характеристики компьютера",
+            font=("Segoe UI", 12, "bold"),
+            fg="#f5f5f5",
+            bg="#1a1a1a",
+            anchor="w",
+        )
+        self.specs_header_label.pack(fill="x", pady=(0, 8))
+
+        self.specs_values_container = tk.Frame(self.specs_panel_frame, bg="#1a1a1a")
+        self.specs_values_container.pack(fill="x")
+
+        self.buttons_row = tk.Frame(self.left_column, bg="#111")
+        self.buttons_row.pack(fill="x", pady=(4, 10))
+
         self.cpu_details_button = tk.Button(
-            self.left_column,
+            self.buttons_row,
             text="Подробнее",
             command=self.toggle_cpu_details_panel,
             bg="#2b2b2b",
@@ -333,7 +356,21 @@ class PcMonitorApp:
             padx=10,
             pady=4,
         )
-        self.cpu_details_button.pack(anchor="w", pady=(4, 10))
+        self.cpu_details_button.pack(side="left")
+
+        self.specs_button = tk.Button(
+            self.buttons_row,
+            text="Характеристики",
+            command=self.toggle_specs_panel,
+            bg="#2b2b2b",
+            fg="#f5f5f5",
+            activebackground="#3a3a3a",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=10,
+            pady=4,
+        )
+        self.specs_button.pack(side="left", padx=(8, 0))
 
         self.threshold_config = {
             "cpu": {"title": "CPU", "unit": "%", "default": 90.0, "max": 100.0},
@@ -405,8 +442,6 @@ class PcMonitorApp:
         )
         return chart
 
-
-
     def adapt_window_to_resolution(self) -> None:
         """Подбирает размер окна под текущее разрешение монитора и центрирует его."""
         screen_width = self.root.winfo_screenwidth()
@@ -420,6 +455,171 @@ class PcMonitorApp:
         pos_x = max((screen_width - target_width) // 2, 0)
         pos_y = max((screen_height - target_height) // 2, 0)
         self.root.geometry(f"{target_width}x{target_height}+{pos_x}+{pos_y}")
+
+    def safe_command_output(self, command: list[str]) -> str:
+        """Безопасно выполняет команду и возвращает вывод без исключений."""
+
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                check=False,
+            )
+        except Exception:
+            return ""
+        return completed.stdout.strip()
+
+    def get_ram_type(self) -> str:
+        """Пробует определить тип RAM. Для не-Windows возвращает N/A."""
+        if platform.system() != "Windows":
+            return "N/A"
+
+        output = self.safe_command_output(
+            ["wmic", "memorychip", "get", "SMBIOSMemoryType"]
+        )
+        if not output:
+            return "N/A"
+
+        type_map = {
+            20: "DDR",
+            21: "DDR2",
+            24: "DDR3",
+            26: "DDR4",
+            34: "DDR5",
+        }
+
+        ram_types = set()
+        for line in output.splitlines():
+            line = line.strip()
+            if line.isdigit() and int(line) in type_map:
+                ram_types.add(type_map[int(line)])
+
+        return ", ".join(sorted(ram_types)) if ram_types else "N/A"
+
+    def collect_pc_specs(self) -> dict[str, str]:
+        """Собирает основные характеристики ПК для отдельного окна."""
+
+        cpu_title = platform.processor().strip() or "N/A"
+        gpu_name = "N/A"
+
+        total_ram_gb = psutil.virtual_memory().total / (1024**3)
+
+        if platform.system() == "Windows":
+            cpu_model_output = self.safe_command_output(["wmic", "cpu", "get", "Name"])
+            cpu_lines = [
+                line.strip() for line in cpu_model_output.splitlines() if line.strip()
+            ]
+        if platform.system() == "Windows":
+            try:
+                wmi_client = wmi.WMI()
+
+                cpu_list = wmi_client.Win32_Processor()
+                if cpu_list and getattr(cpu_list[0], "Name", None):
+                    cpu_title = cpu_list[0].Name.strip()
+
+                video_list = wmi_client.Win32_VideoController()
+                if video_list and getattr(video_list[0], "Name", None):
+                    gpu_name = video_list[0].Name.strip()
+
+                memory_modules = wmi_client.Win32_PhysicalMemory()
+                if memory_modules:
+                    total_ram_bytes = sum(
+                        int(module.Capacity)
+                        for module in memory_modules
+                        if getattr(module, "Capacity", None)
+                    )
+                    if total_ram_bytes > 0:
+                        total_ram_gb = total_ram_bytes / (1024**3)
+
+                    type_map = {
+                        20: "DDR",
+                        21: "DDR2",
+                        24: "DDR3",
+                        26: "DDR4",
+                        34: "DDR5",
+                    }
+                    memory_types = {
+                        type_map[int(module.SMBIOSMemoryType)]
+                        for module in memory_modules
+                        if getattr(module, "SMBIOSMemoryType", None)
+                        and int(module.SMBIOSMemoryType) in type_map
+                    }
+                    if memory_types:
+                        ram_type = ", ".join(sorted(memory_types))
+            except Exception:
+                pass
+
+        if gpu_name == "N/A":
+            try:
+                gpus = GPUtil.getGPUs()
+                if gpus:
+                    gpu_name = gpus[0].name
+            except Exception:
+                gpu_name = "N/A"
+
+        if ram_type == "N/A":
+            ram_type = self.get_ram_type()
+
+        return {
+            "Процессор": cpu_title,
+            "Видеокарта": gpu_name,
+            "Тип оперативной памяти": ram_type,
+            "Объём оперативной памяти": f"{total_ram_gb:.1f} ГБ",
+        }
+
+    def update_specs_panel(self) -> None:
+        """Обновляет содержимое встроенной панели характеристик."""
+        for child in self.specs_values_container.winfo_children():
+            child.destroy()
+
+        try:
+            specs = self.collect_pc_specs()
+        except Exception:
+            specs = {
+                "Процессор": "N/A",
+                "Видеокарта": "N/A",
+                "Тип оперативной памяти": "N/A",
+                "Объём оперативной памяти": "N/A",
+            }
+
+        for label, value in specs.items():
+            row = tk.Frame(self.specs_values_container, bg="#1a1a1a")
+            row.pack(fill="x", pady=2)
+
+            title = tk.Label(
+                row,
+                text=f"{label}:",
+                font=("Segoe UI", 10, "bold"),
+                fg="#dcdcdc",
+                bg="#1a1a1a",
+                width=24,
+                anchor="w",
+            )
+            title.pack(side="left")
+
+            content = tk.Label(
+                row,
+                text=value,
+                font=("Segoe UI", 10),
+                fg="#f5f5f5",
+                bg="#1a1a1a",
+                anchor="w",
+                justify="left",
+                wraplength=500,
+            )
+            content.pack(side="left", fill="x", expand=True)
+
+    def toggle_specs_panel(self) -> None:
+        """Показывает или скрывает встроенную панель характеристик."""
+        if self.specs_visible:
+            self.specs_panel_frame.pack_forget()
+            self.specs_visible = False
+            return
+        self.update_specs_panel()
+        self.specs_panel_frame.pack(fill="x", pady=(0, 8), before=self.buttons_row)
+        self.specs_visible = True
 
     def build_threshold_controls(self) -> None:
         """Создаёт панель ввода пороговых значений и блок предупреждений."""
@@ -738,6 +938,7 @@ class PcMonitorApp:
 
     def on_close(self) -> None:
         """Корректно завершает приложение и освобождает ресурсы."""
+
         self.repo.close()
         self.root.destroy()
 
