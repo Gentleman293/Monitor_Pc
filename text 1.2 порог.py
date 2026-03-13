@@ -292,13 +292,25 @@ class PcMonitorApp:
             bd=0,
         )
         self.left_canvas.pack(side="left", fill="both", expand=True)
+        
+        self.left_scrollbar_holder = tk.Frame(self.left_scroll_container, bg="#111", width=14)
+        self.left_scrollbar_holder.pack(side="right", fill="y", padx=(4, 0))
+        self.left_scrollbar_holder.pack_propagate(False)
+
 
         self.left_scrollbar = tk.Scrollbar(
-            self.left_scroll_container,
+            self.left_scrollbar_holder,
             orient="vertical",
             command=self.left_canvas.yview,
+            width=12
         )
-        self.left_scrollbar.pack(side="right", fill="y", pady=(10, 10))
+        self.left_scrollbar.place(
+            relx=1.0,
+            rely=0.2,
+            relheight=0.75,
+            anchor="ne",
+            x=0,
+        )
         self.left_canvas.configure(yscrollcommand=self.left_scrollbar.set)
 
         self.scrollable_charts_frame = tk.Frame(self.left_canvas, bg="#111")
@@ -523,6 +535,17 @@ class PcMonitorApp:
         pos_x = max((screen_width - target_width) // 2, 0)
         pos_y = max((screen_height - target_height) // 2, 0)
         self.root.geometry(f"{target_width}x{target_height}+{pos_x}+{pos_y}")
+
+    def update_scrollbar_padding(self) -> None:
+        is_windowed = self.root.wm_state() == "normal"
+        if self.cpu_details_visible and is_windowed:
+            self.left_scrollbar_holder.pack_configure(padx=(10, 0))
+            self.left_scrollbar.place_configure(x=0, rely=0.01)
+            return
+
+        self.left_scrollbar_holder.pack_configure(padx=(4, 0))
+        self.left_scrollbar.place_configure(x=0, rely=0.02)
+
 
     def safe_command_output(self, command: list[str]) -> str:
         """Безопасно выполняет команду и возвращает вывод без исключений."""
