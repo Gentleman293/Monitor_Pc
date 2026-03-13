@@ -306,7 +306,7 @@ class PcMonitorApp:
         )
         self.left_scrollbar.place(
             relx=1.0,
-            rely=0.2,
+            rely=0.09,
             relheight=0.75,
             anchor="ne",
             x=0,
@@ -540,11 +540,11 @@ class PcMonitorApp:
         is_windowed = self.root.wm_state() == "normal"
         if self.cpu_details_visible and is_windowed:
             self.left_scrollbar_holder.pack_configure(padx=(10, 0))
-            self.left_scrollbar.place_configure(x=0, rely=0.01)
+            self.left_scrollbar.place_configure(x=0, rely=0.1)
             return
 
         self.left_scrollbar_holder.pack_configure(padx=(4, 0))
-        self.left_scrollbar.place_configure(x=0, rely=0.02)
+        self.left_scrollbar.place_configure(x=0, rely=0.1)
 
 
     def safe_command_output(self, command: list[str]) -> str:
