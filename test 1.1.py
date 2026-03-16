@@ -1,5 +1,7 @@
 import sqlite3
 import tkinter as tk
+import subprocess
+import platform
 
 from collections import deque
 from datetime import datetime
@@ -7,6 +9,7 @@ from datetime import datetime
 import setuptools
 import GPUtil
 import psutil
+import wmi
 
 
 class MetricsRepository:
@@ -126,7 +129,7 @@ class MetricChart:
             highlightthickness=1,
             highlightbackground="#333",
         )
-        self.canvas.pack()
+        self.canvas.pack(anchor="w")
 
         self.line_color = line_color
         self.point_color = "#b2ffd0"
@@ -163,7 +166,7 @@ class MetricChart:
             )
 
             self.canvas.create_text(
-                plot_left - 12,
+                plot_left - 2,
                 y,
                 text=f"{value:.0f}{self.unit}",
                 anchor="e",
@@ -257,7 +260,8 @@ class PcMonitorApp:
         self.root.title("PC Monitor (CPU/RAM/GPU + SQLite)")
         self.root.configure(bg="#111")
         self.adapt_window_to_resolution()
-        self.build_scrollable_layout()
+        self.content_frame = tk.Frame(self.root, bg="#111")
+        self.content_frame.pack(fill="both", expand=True)
 
         self.repo = MetricsRepository(db_path="monitor.db")
         self.cpu_core_labels: list[tk.Label] = []
@@ -276,7 +280,45 @@ class PcMonitorApp:
         self.main_frame.pack(fill="both", expand=True, padx=14, pady=(0, 10))
 
         self.left_column = tk.Frame(self.main_frame, bg="#111")
-        self.left_column.pack(side="left", fill="y", anchor="n")
+        self.left_column.pack(side="left", fill="both", expand=True, anchor="n")
+
+        self.left_scroll_container = tk.Frame(self.left_column, bg="#111")
+        self.left_scroll_container.pack(fill="both", expand=True, anchor="n")
+
+        self.left_canvas = tk.Canvas(
+            self.left_scroll_container,
+            bg="#111",
+            highlightthickness=0,
+            bd=0,
+        )
+        self.left_canvas.pack(side="left", fill="both", expand=True)
+        
+        self.left_scrollbar_holder = tk.Frame(self.left_scroll_container, bg="#111", width=14)
+        self.left_scrollbar_holder.pack(side="right", fill="y", padx=(4, 0))
+        self.left_scrollbar_holder.pack_propagate(False)
+
+
+        self.left_scrollbar = tk.Scrollbar(
+            self.left_scrollbar_holder,
+            orient="vertical",
+            command=self.left_canvas.yview,
+            width=12
+        )
+        self.left_scrollbar.place(
+            relx=1.0,
+            rely=0.09,
+            relheight=0.75,
+            anchor="ne",
+            x=0,
+        )
+        self.left_canvas.configure(yscrollcommand=self.left_scrollbar.set)
+
+        self.scrollable_charts_frame = tk.Frame(self.left_canvas, bg="#111")
+        self.left_canvas_window = self.left_canvas.create_window(
+            (0, 0), window=self.scrollable_charts_frame, anchor="nw"
+        )
+        self.scrollable_charts_frame.bind("<Configure>", self.on_left_column_configure)
+        self.left_canvas.bind("<Configure>", self.on_left_canvas_configure)
 
         self.right_column = tk.Frame(self.main_frame, bg="#111")
         self.right_column.pack(side="left", fill="y", padx=(14, 0), anchor="n")
@@ -284,11 +326,8 @@ class PcMonitorApp:
         self.right_panels_row = tk.Frame(self.right_column, bg="#111")
         self.right_panels_row.pack(fill="x", anchor="n")
 
-        self.charts_grid_frame = tk.Frame(self.left_column, bg="#111")
-        self.charts_grid_frame.pack(fill="both", expand=True)
-        self.charts_grid_frame.grid_columnconfigure(0, weight=1)
-        self.charts_grid_frame.grid_columnconfigure(1, weight=1)
-
+        self.charts_grid_frame = tk.Frame(self.scrollable_charts_frame, bg="#111")
+        self.charts_grid_frame.pack(anchor="w")
         self.cpu_chart = self.create_chart_cell(
             row=0,
             column=0,
@@ -316,12 +355,42 @@ class PcMonitorApp:
             title="Температура видеокарты (GPU)",
             line_color="#ff8f3d",
             y_min=0,
-            y_max=120,
+            y_max=100,
             unit="°C",
         )
 
+        self.cpu_temp_chart = self.create_chart_cell(
+            row=2,
+            column=0,
+            title="Температура процессора (CPU)",
+            line_color="#ffc94d",
+            y_min=0,
+            y_max=110,
+            unit="°C",
+        )
+
+        self.specs_visible = False
+        self.specs_panel_frame = tk.Frame(
+            self.left_column, bg="#1a1a1a", padx=12, pady=10
+        )
+        self.specs_header_label = tk.Label(
+            self.specs_panel_frame,
+            text="Основные характеристики компьютера",
+            font=("Segoe UI", 12, "bold"),
+            fg="#f5f5f5",
+            bg="#1a1a1a",
+            anchor="w",
+        )
+        self.specs_header_label.pack(fill="x", pady=(0, 8))
+
+        self.specs_values_container = tk.Frame(self.specs_panel_frame, bg="#1a1a1a")
+        self.specs_values_container.pack(fill="x")
+
+        self.buttons_row = tk.Frame(self.left_column, bg="#111")
+        self.buttons_row.pack(fill="x", pady=(4, 10))
+
         self.cpu_details_button = tk.Button(
-            self.left_column,
+            self.buttons_row,
             text="Подробнее",
             command=self.toggle_cpu_details_panel,
             bg="#2b2b2b",
@@ -332,7 +401,21 @@ class PcMonitorApp:
             padx=10,
             pady=4,
         )
-        self.cpu_details_button.pack(anchor="w", pady=(2, 10))
+        self.cpu_details_button.pack(side="left")
+
+        self.specs_button = tk.Button(
+            self.buttons_row,
+            text="Характеристики",
+            command=self.toggle_specs_panel,
+            bg="#2b2b2b",
+            fg="#f5f5f5",
+            activebackground="#3a3a3a",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=10,
+            pady=4,
+        )
+        self.specs_button.pack(side="left", padx=(8, 0))
 
         self.threshold_config = {
             "cpu": {"title": "CPU", "unit": "%", "default": 90.0, "max": 100.0},
@@ -374,6 +457,8 @@ class PcMonitorApp:
         self.info_label.pack(fill="x", padx=14, pady=(0, 10))
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.bind_all("<MouseWheel>", self.on_left_column_mousewheel)
+        self.left_canvas.configure(scrollregion=self.left_canvas.bbox("all"))
         self.update_all_metrics()
 
     def create_chart_cell(
@@ -388,7 +473,7 @@ class PcMonitorApp:
     ) -> MetricChart:
         """Создаёт ячейку сетки и размещает в ней график метрики."""
         cell = tk.Frame(self.charts_grid_frame, bg="#111")
-        cell.grid(row=row, column=column, padx=6, pady=6, sticky="nsew")
+        cell.grid(row=row, column=column, padx=4, pady=4, sticky="w")
 
         chart = MetricChart(
             parent=cell,
@@ -404,49 +489,38 @@ class PcMonitorApp:
         )
         return chart
 
-    def build_scrollable_layout(self) -> None:
-        """Создаёт прокручиваемый контейнер для интерфейса по вертикали."""
-        self.scroll_canvas = tk.Canvas(self.root, bg="#111", highlightthickness=0)
-        self.scroll_canvas.pack(side="left", fill="both", expand=True)
+    def on_left_column_configure(self, _event: tk.Event) -> None:
+        """Обновляет область прокрутки по мере изменения высоты левой колонки."""
+        self.left_canvas.configure(scrollregion=self.left_canvas.bbox("all"))
 
-        self.vertical_scrollbar = tk.Scrollbar(
-            self.root,
-            orient="vertical",
-            command=self.scroll_canvas.yview,
-        )
-        self.vertical_scrollbar.pack(side="right", fill="y")
-        self.scroll_canvas.configure(yscrollcommand=self.vertical_scrollbar.set)
+    def on_left_canvas_configure(self, event: tk.Event) -> None:
+        """Растягивает содержимое левой колонки по ширине Canvas."""
+        self.left_canvas.itemconfigure(self.left_canvas_window, width=event.width)
 
-        self.content_frame = tk.Frame(self.scroll_canvas, bg="#111")
-        self.content_window_id = self.scroll_canvas.create_window(
-            (0, 0),
-            window=self.content_frame,
-            anchor="nw",
-        )
+    def on_left_column_mousewheel(self, event: tk.Event) -> None:
+        """Прокручивает область графиков колесом мыши только над блоком графиков."""
+        if not self.left_canvas.winfo_exists():
+            return
 
-        self.content_frame.bind("<Configure>", self.on_content_configure)
-        self.scroll_canvas.bind("<Configure>", self.on_canvas_configure)
-        self.root.bind_all("<MouseWheel>", self.on_mousewheel)
-        self.root.bind_all("<Button-4>", self.on_mousewheel)
-        self.root.bind_all("<Button-5>", self.on_mousewheel)
+        pointer_widget = self.root.winfo_containing(event.x_root, event.y_root)
+        if pointer_widget is None:
+            return
 
-    def on_content_configure(self, _event: tk.Event) -> None:
-        """Обновляет область прокрутки при изменении содержимого."""
-        self.scroll_canvas.configure(scrollregion=self.scroll_canvas.bbox("all"))
+        current = pointer_widget
+        inside_scroll_area = False
+        while current is not None:
+            if current == self.left_scroll_container:
+                inside_scroll_area = True
+                break
+            current = current.master
 
-    def on_canvas_configure(self, event: tk.Event) -> None:
-        """Растягивает внутренний контейнер по ширине canvas."""
-        self.scroll_canvas.itemconfigure(self.content_window_id, width=event.width)
+        if not inside_scroll_area:
+            return
 
-    def on_mousewheel(self, event: tk.Event) -> None:
-        """Прокручивает интерфейс колесом мыши (Windows/macOS/Linux)."""
-        if getattr(event, "num", None) == 4:
-            self.scroll_canvas.yview_scroll(-1, "units")
-        elif getattr(event, "num", None) == 5:
-            self.scroll_canvas.yview_scroll(1, "units")
-        elif getattr(event, "delta", 0):
-            direction = -1 if event.delta > 0 else 1
-            self.scroll_canvas.yview_scroll(direction, "units")
+        delta = event.delta
+        if delta == 0:
+            return
+        self.left_canvas.yview_scroll(int(-delta / 120), "units")
 
     def adapt_window_to_resolution(self) -> None:
         """Подбирает размер окна под текущее разрешение монитора и центрирует его."""
@@ -462,19 +536,181 @@ class PcMonitorApp:
         pos_y = max((screen_height - target_height) // 2, 0)
         self.root.geometry(f"{target_width}x{target_height}+{pos_x}+{pos_y}")
 
-    def adapt_window_to_resolution(self) -> None:
-        """Подбирает размер окна под текущее разрешение монитора и центрирует его."""
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
+    def update_scrollbar_padding(self) -> None:
+        is_windowed = self.root.wm_state() == "normal"
+        if self.cpu_details_visible and is_windowed:
+            self.left_scrollbar_holder.pack_configure(padx=(10, 0))
+            self.left_scrollbar.place_configure(x=0, rely=0.1)
+            return
 
-        target_width = min(1280, max(900, int(screen_width * 0.85)))
-        target_height = min(900, max(680, int(screen_height * 0.85)))
+        self.left_scrollbar_holder.pack_configure(padx=(4, 0))
+        self.left_scrollbar.place_configure(x=0, rely=0.1)
 
-        self.root.minsize(900, 680)
 
-        pos_x = max((screen_width - target_width) // 2, 0)
-        pos_y = max((screen_height - target_height) // 2, 0)
-        self.root.geometry(f"{target_width}x{target_height}+{pos_x}+{pos_y}")
+    def safe_command_output(self, command: list[str]) -> str:
+        """Безопасно выполняет команду и возвращает вывод без исключений."""
+
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                check=False,
+            )
+        except Exception:
+            return ""
+        return completed.stdout.strip()
+
+    def get_ram_type(self) -> str:
+        """Пробует определить тип RAM. Для не-Windows возвращает N/A."""
+        if platform.system() != "Windows":
+            return "N/A"
+
+        output = self.safe_command_output(
+            ["wmic", "memorychip", "get", "SMBIOSMemoryType"]
+        )
+        if not output:
+            return "N/A"
+
+        type_map = {
+            20: "DDR",
+            21: "DDR2",
+            24: "DDR3",
+            26: "DDR4",
+            34: "DDR5",
+        }
+
+        ram_types = set()
+        for line in output.splitlines():
+            line = line.strip()
+            if line.isdigit() and int(line) in type_map:
+                ram_types.add(type_map[int(line)])
+
+        return ", ".join(sorted(ram_types)) if ram_types else "N/A"
+
+    def collect_pc_specs(self) -> dict[str, str]:
+        """Собирает основные характеристики ПК для отдельного окна."""
+
+        cpu_title = platform.processor().strip() or "N/A"
+        gpu_name = "N/A"
+
+        total_ram_gb = psutil.virtual_memory().total / (1024**3)
+
+        if platform.system() == "Windows":
+            cpu_model_output = self.safe_command_output(["wmic", "cpu", "get", "Name"])
+            cpu_lines = [
+                line.strip() for line in cpu_model_output.splitlines() if line.strip()
+            ]
+        if platform.system() == "Windows":
+            try:
+                wmi_client = wmi.WMI()
+
+                cpu_list = wmi_client.Win32_Processor()
+                if cpu_list and getattr(cpu_list[0], "Name", None):
+                    cpu_title = cpu_list[0].Name.strip()
+
+                video_list = wmi_client.Win32_VideoController()
+                if video_list and getattr(video_list[0], "Name", None):
+                    gpu_name = video_list[0].Name.strip()
+
+                memory_modules = wmi_client.Win32_PhysicalMemory()
+                if memory_modules:
+                    total_ram_bytes = sum(
+                        int(module.Capacity)
+                        for module in memory_modules
+                        if getattr(module, "Capacity", None)
+                    )
+                    if total_ram_bytes > 0:
+                        total_ram_gb = total_ram_bytes / (1024**3)
+
+                    type_map = {
+                        20: "DDR",
+                        21: "DDR2",
+                        24: "DDR3",
+                        26: "DDR4",
+                        34: "DDR5",
+                    }
+                    memory_types = {
+                        type_map[int(module.SMBIOSMemoryType)]
+                        for module in memory_modules
+                        if getattr(module, "SMBIOSMemoryType", None)
+                        and int(module.SMBIOSMemoryType) in type_map
+                    }
+                    if memory_types:
+                        ram_type = ", ".join(sorted(memory_types))
+            except Exception:
+                pass
+
+        if gpu_name == "N/A":
+            try:
+                gpus = GPUtil.getGPUs()
+                if gpus:
+                    gpu_name = gpus[0].name
+            except Exception:
+                gpu_name = "N/A"
+
+        if ram_type == "N/A":
+            ram_type = self.get_ram_type()
+
+        return {
+            "Процессор": cpu_title,
+            "Видеокарта": gpu_name,
+            "Тип оперативной памяти": ram_type,
+            "Объём оперативной памяти": f"{total_ram_gb:.1f} ГБ",
+        }
+
+    def update_specs_panel(self) -> None:
+        """Обновляет содержимое встроенной панели характеристик."""
+        for child in self.specs_values_container.winfo_children():
+            child.destroy()
+
+        try:
+            specs = self.collect_pc_specs()
+        except Exception:
+            specs = {
+                "Процессор": "N/A",
+                "Видеокарта": "N/A",
+                "Тип оперативной памяти": "N/A",
+                "Объём оперативной памяти": "N/A",
+            }
+
+        for label, value in specs.items():
+            row = tk.Frame(self.specs_values_container, bg="#1a1a1a")
+            row.pack(fill="x", pady=2)
+
+            title = tk.Label(
+                row,
+                text=f"{label}:",
+                font=("Segoe UI", 10, "bold"),
+                fg="#dcdcdc",
+                bg="#1a1a1a",
+                width=24,
+                anchor="w",
+            )
+            title.pack(side="left")
+
+            content = tk.Label(
+                row,
+                text=value,
+                font=("Segoe UI", 10),
+                fg="#f5f5f5",
+                bg="#1a1a1a",
+                anchor="w",
+                justify="left",
+                wraplength=500,
+            )
+            content.pack(side="left", fill="x", expand=True)
+
+    def toggle_specs_panel(self) -> None:
+        """Показывает или скрывает встроенную панель характеристик."""
+        if self.specs_visible:
+            self.specs_panel_frame.pack_forget()
+            self.specs_visible = False
+            return
+        self.update_specs_panel()
+        self.specs_panel_frame.pack(fill="x", pady=(0, 8), before=self.buttons_row)
+        self.specs_visible = True
 
     def build_threshold_controls(self) -> None:
         """Создаёт панель ввода пороговых значений и блок предупреждений."""
@@ -721,6 +957,39 @@ class PcMonitorApp:
             self.warning_label.configure(fg="#58c46b")
 
     @staticmethod
+    def read_cpu_temperature() -> float | None:
+        """Пробует определить текущую температуру CPU через psutil.sensors_temperatures."""
+        try:
+            sensors = psutil.sensors_temperatures()
+        except Exception:
+            return None
+
+        if not sensors:
+            return None
+
+        preferred_labels = {
+            "package id 0",
+            "package",
+            "cpu package",
+            "tdie",
+            "tctl",
+            "cpu",
+        }
+
+        for entries in sensors.values():
+            for entry in entries:
+                label = (entry.label or "").strip().lower()
+                if label in preferred_labels and entry.current is not None:
+                    return float(entry.current)
+
+        for entries in sensors.values():
+            for entry in entries:
+                if entry.current is not None:
+                    return float(entry.current)
+
+        return None
+
+    @staticmethod
     def read_gpu_metrics() -> tuple[float | None, float | None]:
         """Читаем первую доступную GPU через GPUtil: (load%, tempC)."""
         try:
@@ -743,6 +1012,7 @@ class PcMonitorApp:
         cpu_percent = psutil.cpu_percent(interval=None)
         ram_percent = psutil.virtual_memory().percent
         gpu_load_percent, gpu_temp_c = self.read_gpu_metrics()
+        cpu_temp_c = self.read_cpu_temperature()
 
         self.cpu_chart.update_value(
             cpu_percent, f"Текущая загрузка CPU: {cpu_percent:.1f}%"
@@ -765,6 +1035,13 @@ class PcMonitorApp:
         else:
             self.gpu_temp_chart.update_value(
                 gpu_temp_c, f"Текущая температура GPU: {gpu_temp_c:.1f}°C"
+            )
+
+        if cpu_temp_c is None:
+            self.cpu_temp_chart.update_value(0.0, "CPU temp: N/A")
+        else:
+            self.cpu_temp_chart.update_value(
+                cpu_temp_c, f"Текущая температура CPU: {cpu_temp_c:.1f}°C"
             )
 
         self.repo.insert_measurement(
@@ -793,6 +1070,8 @@ class PcMonitorApp:
 
     def on_close(self) -> None:
         """Корректно завершает приложение и освобождает ресурсы."""
+
+        self.root.unbind_all("<MouseWheel>")
         self.repo.close()
         self.root.destroy()
 
